@@ -3,7 +3,7 @@
  * Plugin Name:     Easy Digital Downloads - Taxamo Integration
  * Plugin URI:      http://winwar.co.uk/plugins/easy-digital-downloads-taxamo-integration/?utm_source=plugin-link&utm_medium=plugin&utm_campaign=eddtaxamointegration
  * Description:     Integrate Taxamo into Easy Digital Downloads. Make yourself Compatible with the VATMOSS EU Legislation
- * Version:         1.6.3
+ * Version:         1.6.2
  * Author:          Winwar Media
  * Author URI:      http://winwar.co.uk/?utm_source=author-link&utm_medium=plugin&utm_campaign=eddtaxamointegration
  * Text Domain:     taxamo-edd-integration
@@ -32,6 +32,20 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 // Exit if accessed directly
 if ( !defined( 'ABSPATH' ) ) exit;
+
+//disable plugin update
+
+add_filter( 'http_request_args', 'dm_prevent_update_check', 10, 2 );
+function dm_prevent_update_check( $r, $url ) {
+    if ( 0 === strpos( $url, 'http://api.wordpress.org/plugins/update-check/' ) ) {
+        $my_plugin = plugin_basename( __FILE__ );
+        $plugins = unserialize( $r['body']['plugins'] );
+        unset( $plugins->plugins[$my_plugin] );
+        unset( $plugins->active[array_search( $my_plugin, $plugins->active )] );
+        $r['body']['plugins'] = serialize( $plugins );
+    }
+    return $r;
+}
 
 if ( !class_exists( 'EDD_Taxamo_EDD_Integration' ) ) {
 
@@ -370,12 +384,14 @@ return array_merge( $settings, $new_settings );
 
             ?>
 
+            <input class="edd-self-declaration" type="hidden" name="edd_self_declaration" id="edd-self-declaration" value="true" />
 
-            <p id="edd-confirmation-checkbox" <?php echo $stylecss; ?>>
-                <label for="edd-self-declaration" class="edd-label">
-                    <?php _e( 'By clicking this checkbox, I can confirm my billing address is valid and is located in my usual country of residence.', 'taxamoedd' ); ?>
-                    <input class="edd-self-declaration" type="checkbox" name="edd_self_declaration" id="edd-self-declaration" value="true" />
-                </label>
+<!--            <p id="edd-confirmation-checkbox" <?php /*echo $stylecss; */?>>
+
+                <label for="edd-vat-confirm" class="edd-label">
+                    <?php /*_e( 'By clicking this checkbox, I can confirm my billing address is valid and is located in my usual country of residence.', 'taxamoedd' ); */?>
+
+                </label>-->
                 <?php
             }
 
@@ -390,7 +406,7 @@ return array_merge( $settings, $new_settings );
             <p id="edd-vat-reg-check-wrap">
                 <label for="edd-vatreg" class="edd-label">
                     <?php _e( 'I am registered for VAT in the EU', 'taxamoedd' ); ?>
-                    <input class="edd-vatreg" type="checkbox" name="edd_vatreg" id="edd-vatreg" value="true" />
+<!--                    <input class="edd-vatreg" type="hidden" name="edd_vatreg" id="edd-vatreg" value="true" />-->
                 </label>
             </p>
 
@@ -399,11 +415,31 @@ return array_merge( $settings, $new_settings );
                     <?php _e( 'VAT Number', 'taxamoedd' ); ?>
                 </label>
                 <span class="edd-description"><?php _e( 'If you are registered for VAT, place your VAT number here (no spaces).', 'taxamoedd' ); ?></span>
+                <input class="edd-vatreg" type="hidden" name="edd_vatreg" id="edd-vatreg" value="true" />
                 <input type="text" id="vat_number" name="vat_number" class="vat-number edd-input" placeholder="<?php _e( 'VAT Number', 'taxamoedd' ); ?>" value=""/>
+
             </p>
 
+            <p class="vat-note">* VAT will be applied to EU customers unless a valid EU VAT number is provided.</p>
 
+
+            <div class="user-fields-divider"></div>
+
+            <div style="padding: 10px 0;">Payments Details</div>
             <?php
+        }
+
+        public static function mm_check_vat_number($vat_number) {
+            global $edd_options;
+
+            if ( isset( $edd_options['taxedd_private_token'] ) ) {
+
+                $resp = taxedd_get_vat_details( $vat_number );
+
+                return 1 == $resp['buyer_tax_number_valid'];
+            }
+
+            return false;
         }
 
         /**
@@ -425,7 +461,7 @@ return array_merge( $settings, $new_settings );
                     $resp = taxedd_get_vat_details( $vatnumber );
 
                     if ( 1 != $resp['buyer_tax_number_valid'] ) {
-                        edd_set_error( 'taxedd-invalid-vat-number', __( 'The VAT number is invalid. Please double check or untick the VAT Registered Box.', 'taxamoedd' ) );
+                        edd_set_error( 'taxedd-invalid-vat-number', __( 'The VAT number is invalid.', 'taxamoedd' ) );
                     }
 
                 } else {
@@ -492,13 +528,21 @@ return array_merge( $settings, $new_settings );
                     $payment_meta['vat_billing_country_code'] = $payment_meta['user_info']['address']['country'];
                 }
                 // But if the base country is equal to the VAT Country code, add the tax on.
+                // todo: what is this???
                 if ( $edd_options['base_country'] == $payment_meta['vat_billing_country_code'] ) {
                     $payment_meta['tax'] = $this->calculate_tax( $payment_meta['vat_billing_country_code'] );
                 }
 
             } else {
                 $payment_meta['vat_number'] = "";
-                $payment_meta['tax'] = $this->calculate_tax( $payment_meta['user_info']['address']['country'] );
+                $user_country = $payment_meta['user_info']['address']['country'];
+                if ( ! $user_country ) {
+                    $user_country = ! empty( $_POST['billing_country'] ) ? sanitize_text_field( $_POST['billing_country'] ) : false;
+                }
+
+                $payment_meta['tax'] = $this->calculate_tax( $user_country );
+
+//                $payment_meta['tax'] = $this->calculate_tax( $payment_meta['user_info']['address']['country'] );
             }
 
             // Set self declaration flag if needed.
@@ -971,7 +1015,9 @@ return array_merge( $settings, $new_settings );
                         $address = array_merge( $postalcode, $address );
                     }
 
-                    $transaction->invoice_address = $address;
+                    if (!empty($address)) {
+                        $transaction->invoice_address = $address;
+                    }
 
                     $transaction->invoice_date = date( "Y-m-d", $date );
 
@@ -1056,10 +1102,15 @@ return array_merge( $settings, $new_settings );
         /**
          * Filter to display tax. This is done based on address, if not present it's done on IP address.
          *
-         * @return void
+         * @return float
          */
         public function calculate_tax_filter( $carttax ) {
             global $edd_options;
+
+            // when field "registered for VAT" is ticked
+            if ( $_POST['action'] == 'edd_recalculate_taxes' && $_POST['state'] == 'VAT') {
+                return 0;
+            }
 
             if ( isset( $edd_options['taxedd_private_token'] ) ) {
 
@@ -1071,6 +1122,8 @@ return array_merge( $settings, $new_settings );
                     return $carttax;
                 }
             }
+
+            return $carttax;
         }
 
 
@@ -1187,6 +1240,11 @@ return array_merge( $settings, $new_settings );
 
             if ( isset( $this->api_responses['countrycode'] ) ) {
                 $cachedcountrycode = $this->api_responses['countrycode'];
+            }
+
+            if ( !$countrycode && $_POST['action'] == 'edd_recalculate_taxes' &&
+                 isset($_POST['billing_country'])) {
+                $countrycode = $_POST['billing_country'];
             }
 
             if ( !$countrycode ) {
@@ -1545,5 +1603,64 @@ return array_merge( $settings, $new_settings );
     register_activation_hook( __FILE__, array( 'EDD_Taxamo_EDD_Integration', 'activation' ) );
 
     add_action( 'plugins_loaded', 'EDD_Taxamo_EDD_Integration_load' );
+
+
+
+    /*
+     * Multimerch fixes
+	 * Modify tax for single cart details item, so the subtotal is calculated correctly
+	 */
+
+    add_action( 'edd_setup_payment', 'setup_correct_tax', 10, 2);
+    function setup_correct_tax($edd_payment, $payment_id) {
+        if ((float)$edd_payment->tax > 0 && $edd_payment->subtotal == $edd_payment->total) {
+            $edd_payment->total = $edd_payment->subtotal + $edd_payment->tax;
+            if (!empty($edd_payment->payment_meta['cart_details'])) {
+                $edd_payment->payment_meta['cart_details'][0]['tax'] = $edd_payment->tax;
+            }
+        }
+    }
+
+    add_filter( 'edd_shop_country', 'change_base_country' );
+    function change_base_country( $country ) {
+        if ( ! function_exists( 'taxedd_get_country_code' ) ) {
+            return $country;
+        }
+
+        $default_country = 'US';
+        if ( $country == $default_country ) {
+            $ipcc    = taxedd_get_country_code();
+            $country = $ipcc->country_code;
+        }
+
+        return $country;
+    }
+
+    function mm_check_vat() {
+        if ( ! edd_get_cart_contents() ) {
+            return false;
+        }
+
+        $vat_number = trim($_POST['vat_number']);
+        if (!$vat_number) {
+            echo 'vat_empty';
+            edd_die();
+        }
+
+        if ( empty( $_POST['billing_country'] ) ) {
+            $_POST['billing_country'] = edd_get_shop_country();
+        }
+
+        if (EDD_Taxamo_EDD_Integration::mm_check_vat_number($vat_number)) {
+            echo 'vat_valid';
+        } else {
+            echo 'vat_not_valid';
+        }
+
+        edd_die();
+    }
+    add_action( 'wp_ajax_mm_check_vat', 'mm_check_vat' );
+    add_action( 'wp_ajax_nopriv_mm_check_vat', 'mm_check_vat' );
+
 
 } // End if class_exists check
